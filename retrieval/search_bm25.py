@@ -2,10 +2,11 @@
 
 import json
 import os
-import re
 
+import snowballstemmer
 from minio import Minio
 from rank_bm25 import BM25Okapi
+from razdel import tokenize as razdel_tokenize
 
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
@@ -15,13 +16,34 @@ MINIO_BUCKET = os.getenv("MINIO_BUCKET", "rag-documents")
 
 CHUNKS_PREFIX = "chunks/"
 RESULTS_LIMIT = 5
-TOKEN_PATTERN = re.compile(r"[0-9a-zа-яё]+", re.IGNORECASE)
+RUSSIAN_STEMMER = snowballstemmer.stemmer("russian")
 
 
 def tokenize(text: str) -> list[str]:
-    """Приводит текст к нижнему регистру и выделяет слова и числа."""
+    """Токенизирует текст и приводит русские слова к общей основе."""
 
-    return TOKEN_PATTERN.findall(text.casefold())
+    terms = []
+
+    for token in razdel_tokenize(text):
+        # Дефисные слова и конструкции со слешем полезнее искать по частям.
+        value = token.text.casefold().replace("ё", "е")
+        parts = value.replace("-", " ").replace("/", " ").split()
+
+        for part in parts:
+            if not any(character.isalnum() for character in part):
+                continue
+
+            # Английские термины, числа и идентификаторы сохраняем как есть.
+            is_russian_word = part.isalpha() and any(
+                "а" <= character <= "я" for character in part
+            )
+            terms.append(
+                RUSSIAN_STEMMER.stemWord(part)
+                if is_russian_word
+                else part
+            )
+
+    return terms
 
 
 def load_chunks(client: Minio) -> list[dict]:

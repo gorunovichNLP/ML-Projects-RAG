@@ -1,11 +1,17 @@
-# Hybrid RAG: шаг 1 — загрузка raw-документов в MinIO
+# Hybrid RAG
 
-На первом шаге у нас всего четыре рабочих элемента:
+## Структура проекта
 
-- `raw_data_local/` — 10 исходных DOCX-файлов;
-- `compose.yaml` — локальный MinIO;
-- `requirements.txt` — Python SDK для MinIO;
-- `upload_raw_docs.py` — загрузка документов.
+```text
+ingestion/            загрузка, обработка, чанкинг и dense-индексация
+retrieval/            dense, BM25 и гибридный поиск
+data/raw_docs/        10 исходных DOCX-файлов
+data/chunks.jsonl     локальная контрольная выгрузка чанков
+compose.yaml          MinIO и Qdrant
+requirements.txt      зависимости Python
+```
+
+Все команды ниже выполняются из корня проекта.
 
 Документы сохраняются в bucket `rag-documents` с ключами
 `raw/<имя документа>.docx`. Скрипт записывает SHA-256 в метаданные объекта,
@@ -13,7 +19,7 @@
 
 ## Запуск
 
-Создаём окружение и устанавливаем одну зависимость:
+Создаём окружение и устанавливаем зависимости:
 
 ```powershell
 python -m venv .venv
@@ -30,7 +36,7 @@ docker compose up -d
 Загружаем документы:
 
 ```powershell
-python upload_raw_docs.py
+python ingestion/upload_raw_docs.py
 ```
 
 MinIO Console будет доступна по адресу `http://localhost:9001`.
@@ -43,9 +49,9 @@ MinIO Console будет доступна по адресу `http://localhost:90
 
 ## Обработка документов
 
-Скрипт `process_documents.py` берёт все DOCX из MinIO, извлекает текст, таблицы
-и изображения, распознаёт изображения через Tesseract (`rus+eng`) и сохраняет
-результат обратно в MinIO:
+Скрипт `ingestion/process_documents.py` берёт все DOCX из MinIO, извлекает
+текст, таблицы и изображения, распознаёт изображения через Tesseract
+(`rus+eng`) и сохраняет результат обратно в MinIO:
 
 ```text
 processed/<название документа>/
@@ -60,23 +66,24 @@ processed/<название документа>/
 
 ```powershell
 python -m pip install -r requirements.txt
-python process_documents.py
+python ingestion/process_documents.py
 ```
 
 Если Tesseract установлен нестандартно, укажите путь явно:
 
 ```powershell
 $env:TESSERACT_PATH = "C:\path\to\tesseract.exe"
-python process_documents.py
+python ingestion/process_documents.py
 ```
 
 ## Чанкинг
 
-Скрипт `chunk_documents.py` читает обработанные Markdown, строит путь по
-заголовкам и объединяет соседние абзацы одного раздела в чанки до 512 токенов:
+Скрипт `ingestion/chunk_documents.py` читает обработанные Markdown, строит путь
+по заголовкам и объединяет соседние абзацы одного раздела в чанки до 512
+токенов:
 
 ```powershell
-python chunk_documents.py
+python ingestion/chunk_documents.py
 ```
 
 Результат сохраняется в MinIO:
@@ -110,28 +117,55 @@ Qdrant запущен без аутентификации, поэтому его
 
 ## Dense-индексация
 
-Скрипт `index_dense.py` читает все чанки из MinIO, строит нормализованные
-векторы `multilingual-e5-large` и загружает их вместе с текстом и метаданными в
-Qdrant:
+Скрипт `ingestion/index_dense.py` читает все чанки из MinIO, строит
+нормализованные векторы `multilingual-e5-large` и загружает их вместе с текстом
+и метаданными в Qdrant:
 
 ```powershell
 python -m pip install -r requirements.txt
-python index_dense.py
+python ingestion/index_dense.py
 ```
 
 Перед текстом каждого чанка добавляется обязательный для E5 префикс
 `passage:`. Повторный запуск обновляет те же точки по стабильным UUID и не
 создаёт дубликаты.
 
-## BM25-поиск
-
-Скрипт `search_bm25.py` читает чанки из MinIO и при запуске строит небольшой
-BM25-индекс в оперативной памяти:
+Проверить dense-поиск отдельно:
 
 ```powershell
-python search_bm25.py
+python retrieval/search_dense.py
 ```
 
-Индекс не сохраняется на диск: для текущих 384 чанков он строится быстро. Текст
-приводится к нижнему регистру и разбивается на слова и числа. BM25 хорошо
-дополняет dense-поиск точными совпадениями терминов, имён, аббревиатур и чисел.
+## BM25-поиск
+
+Скрипт `retrieval/search_bm25.py` читает чанки из MinIO и при запуске строит
+небольшой BM25-индекс в оперативной памяти:
+
+```powershell
+python retrieval/search_bm25.py
+```
+
+Индекс не сохраняется на диск: для текущих 384 чанков он строится быстро. Razdel
+разбивает русский текст на токены, после чего Snowball приводит формы русских
+слов к общей основе. Английские термины, идентификаторы и числа сохраняются без
+стемминга. BM25 дополняет dense-поиск точными лексическими совпадениями.
+
+## Гибридный поиск
+
+Скрипт `retrieval/search_hybrid.py` получает по 20 результатов из dense и BM25
+поиска, отдельно нормализует их scores в диапазон от 0 до 1 и объединяет с
+весами 85% и 15%:
+
+```text
+hybrid_score = 0.85 * dense_normalized + 0.15 * bm25_normalized
+```
+
+Запуск:
+
+```powershell
+python retrieval/search_hybrid.py
+```
+
+Результаты объединяются по `chunk_id`, сортируются по `hybrid_score`, после чего
+выводятся итоговые top 20. Исходные scores и позиции обоих поисков также
+показываются для ручной проверки формулы.

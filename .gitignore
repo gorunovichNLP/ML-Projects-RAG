@@ -11,6 +11,6 @@ __pycache__/
 .mypy_cache/
 
 # Raw source documents are local input data, not source code.
-raw_data_local/
+data/raw_docs/
 
 .env

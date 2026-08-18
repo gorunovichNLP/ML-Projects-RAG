@@ -1,4 +1,4 @@
-"""Загрузка исходных DOCX-документов из raw_data_local в MinIO."""
+"""Загрузка исходных DOCX-документов из data/raw_docs в MinIO."""
 
 import hashlib
 import os
@@ -15,7 +15,7 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "rag_admin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "rag_local_password")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "rag-documents")
 
-SOURCE_DIR = Path("raw_data_local")
+SOURCE_DIR = Path("data/raw_docs")
 RAW_PREFIX = "raw"
 
 
@@ -117,4 +117,3 @@ def upload_raw_documents() -> None:
 
 if __name__ == "__main__":
     upload_raw_documents()
-
