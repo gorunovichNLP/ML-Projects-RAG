@@ -1,0 +1,16 @@
+# Local secrets and Python environments.
+.env
+.venv/
+venv/
+
+# Python-generated files.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Raw source documents are local input data, not source code.
+raw_data_local/
+
+.env
