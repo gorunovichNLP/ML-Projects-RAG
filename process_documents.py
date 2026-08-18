@@ -1,4 +1,4 @@
-"""Преобразование одного DOCX из MinIO в Markdown с OCR изображений."""
+"""Преобразование всех DOCX из MinIO в Markdown с OCR изображений."""
 
 import os
 import shutil
@@ -17,9 +17,7 @@ MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "rag_admin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "rag_local_password")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "rag-documents")
 
-# Пока обрабатываем только документ №1. После ручной проверки Markdown уберём
-# это ограничение и применим тот же код ко всем документам.
-DOCUMENT_PREFIX = "raw/1_"
+RAW_PREFIX = "raw/"
 
 
 def find_tesseract() -> str:
@@ -113,29 +111,15 @@ def table_to_markdown(table: Table) -> str:
     return "\n".join([rows[0], separator, *rows[1:]])
 
 
-def process_document() -> None:
-    """Скачивает DOCX, создаёт Markdown и загружает результат в MinIO."""
+def process_document(
+    client: Minio,
+    tesseract: str,
+    source_object: str,
+) -> tuple[int, int, int]:
+    """Обрабатывает один DOCX и возвращает счётчики изображений и OCR."""
 
-    client = Minio(
-        MINIO_ENDPOINT,
-        access_key=MINIO_ACCESS_KEY,
-        secret_key=MINIO_SECRET_KEY,
-        secure=False,
-    )
-
-    source_objects = list(
-        client.list_objects(MINIO_BUCKET, prefix=DOCUMENT_PREFIX, recursive=True)
-    )
-    if len(source_objects) != 1:
-        raise RuntimeError(
-            f"Ожидался один объект с префиксом {DOCUMENT_PREFIX!r}, "
-            f"найдено: {len(source_objects)}"
-        )
-
-    source_object = source_objects[0].object_name
     document_name = Path(source_object).stem
     processed_prefix = f"processed/{document_name}"
-    tesseract = find_tesseract()
 
     # Временная папка удалится автоматически после загрузки результата в MinIO.
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -158,12 +142,11 @@ def process_document() -> None:
                 table_markdown = table_to_markdown(block)
                 if table_markdown:
                     markdown.extend([table_markdown, ""])
-                continue
-
-            text = block.text.strip()
-            if text:
-                style_name = block.style.name if block.style else ""
-                markdown.extend([paragraph_prefix(style_name) + text, ""])
+            else:
+                text = block.text.strip()
+                if text:
+                    style_name = block.style.name if block.style else ""
+                    markdown.extend([paragraph_prefix(style_name) + text, ""])
 
             # Изображения могут быть как встроенными, так и плавающими. Оба
             # варианта содержат ссылку a:blip на соответствующий image part.
@@ -220,7 +203,56 @@ def process_document() -> None:
     print(f"Изображений обработано: {image_number}")
     print(f"OCR выполнен: {ocr_number}, длинных схем пропущено: {skipped_ocr}")
     print(f"Результат: {processed_prefix}/document.md")
+    return image_number, ocr_number, skipped_ocr
+
+
+def process_documents() -> None:
+    """Последовательно обрабатывает все raw DOCX-документы из MinIO."""
+
+    client = Minio(
+        MINIO_ENDPOINT,
+        access_key=MINIO_ACCESS_KEY,
+        secret_key=MINIO_SECRET_KEY,
+        secure=False,
+    )
+    tesseract = find_tesseract()
+
+    source_objects = sorted(
+        (
+            item.object_name
+            for item in client.list_objects(
+                MINIO_BUCKET,
+                prefix=RAW_PREFIX,
+                recursive=True,
+            )
+            if item.object_name.lower().endswith(".docx")
+        ),
+        key=str.casefold,
+    )
+    if not source_objects:
+        raise RuntimeError(f"В {MINIO_BUCKET}/{RAW_PREFIX} нет DOCX-документов")
+
+    total_images = 0
+    total_ocr = 0
+    total_skipped_ocr = 0
+
+    for document_number, source_object in enumerate(source_objects, start=1):
+        print(f"\n[{document_number}/{len(source_objects)}]")
+        images, ocr, skipped_ocr = process_document(
+            client,
+            tesseract,
+            source_object,
+        )
+        total_images += images
+        total_ocr += ocr
+        total_skipped_ocr += skipped_ocr
+
+    print("\nВсе документы обработаны.")
+    print(f"Документов: {len(source_objects)}")
+    print(f"Изображений: {total_images}")
+    print(f"OCR выполнен: {total_ocr}")
+    print(f"Длинных схем пропущено: {total_skipped_ocr}")
 
 
 if __name__ == "__main__":
-    process_document()
+    process_documents()
