@@ -69,3 +69,23 @@ python process_documents.py
 $env:TESSERACT_PATH = "C:\path\to\tesseract.exe"
 python process_documents.py
 ```
+
+## Чанкинг
+
+Скрипт `chunk_documents.py` читает обработанные Markdown, строит путь по
+заголовкам и объединяет соседние абзацы одного раздела в чанки до 512 токенов:
+
+```powershell
+python chunk_documents.py
+```
+
+Результат сохраняется в MinIO:
+
+```text
+chunks/<название документа>/chunks.jsonl
+```
+
+Каждая строка JSONL содержит `chunk_id`, источник, `heading_path`, текст чанка и
+точный `token_count`. В лимит входят префикс `passage:`, путь заголовков и
+служебные токены `multilingual-e5-large`. Чанки не пересекают границы разделов.
+Если отдельный абзац превышает лимит, он делится с перекрытием 64 токена.
