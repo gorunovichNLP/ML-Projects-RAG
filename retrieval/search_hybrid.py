@@ -112,8 +112,8 @@ def min_max_normalize(scores_by_id: dict[str, float]) -> dict[str, float]:
     }
 
 
-def hybrid_search() -> None:
-    """Выполняет dense и BM25 поиск и объединяет нормализованные scores."""
+def prepare_search():
+    """Один раз загружает корпус, BM25, E5 и подключение к Qdrant."""
 
     minio_client = Minio(
         MINIO_ENDPOINT,
@@ -122,31 +122,43 @@ def hybrid_search() -> None:
         secure=False,
     )
     chunks = load_chunks(minio_client)
-    chunks_by_id = {chunk["chunk_id"]: chunk for chunk in chunks}
-
     bm25 = BM25Okapi([tokenize(chunk["text"]) for chunk in chunks])
     print(f"BM25-индекс построен: {len(chunks)} чанка")
 
-    question = input("Введите вопрос: ").strip()
+    model = SentenceTransformer(MODEL_NAME)
+    qdrant_client = QdrantClient(url=QDRANT_URL)
+    return chunks, bm25, model, qdrant_client
+
+
+def retrieve(
+    question: str,
+    chunks: list[dict],
+    bm25: BM25Okapi,
+    model: SentenceTransformer,
+    qdrant_client: QdrantClient,
+) -> dict:
+    """Возвращает отдельные выдачи dense, BM25 и объединённый top-20."""
+
+    question = question.strip()
+    if not question:
+        raise ValueError("Вопрос не может быть пустым")
+
+    chunks_by_id = {chunk["chunk_id"]: chunk for chunk in chunks}
     query_tokens = tokenize(question)
     if not query_tokens:
         raise ValueError("Запрос не содержит слов или чисел")
 
-    model = SentenceTransformer(MODEL_NAME)
     query_vector = model.encode(
         f"query: {question}",
         normalize_embeddings=True,
     )
 
-    qdrant_client = QdrantClient(url=QDRANT_URL)
     dense_results = qdrant_client.query_points(
         collection_name=QDRANT_COLLECTION,
         query=query_vector.tolist(),
         limit=CANDIDATES_LIMIT,
         with_payload=True,
     ).points
-    # Dense-модель больше не нужна: освобождаем память перед reranker-ом.
-    del model
 
     dense_scores = {
         result.payload["chunk_id"]: result.score
@@ -191,12 +203,41 @@ def hybrid_search() -> None:
             "chunk_id": chunk_id,
             "chunk": chunks_by_id[chunk_id],
             "hybrid_score": hybrid_score,
+            "dense_rank": dense_ranks.get(chunk_id),
+            "dense_raw": dense_scores.get(chunk_id),
+            "dense_normalized": dense_normalized.get(chunk_id),
+            "bm25_rank": bm25_ranks.get(chunk_id),
+            "bm25_raw": bm25_scores.get(chunk_id),
+            "bm25_normalized": bm25_normalized.get(chunk_id),
         }
         for hybrid_score, chunk_id in hybrid_results
     ]
+
+    return {
+        "dense_ids": list(dense_scores),
+        "bm25_ids": list(bm25_scores),
+        "hybrid_candidates": hybrid_candidates,
+    }
+
+
+def hybrid_search() -> None:
+    """Выполняет интерактивный гибридный поиск с reranking."""
+
+    chunks, bm25, model, qdrant_client = prepare_search()
+    question = input("Введите вопрос: ").strip()
+    retrieval = retrieve(
+        question,
+        chunks,
+        bm25,
+        model,
+        qdrant_client,
+    )
+
+    # Dense-модель больше не нужна: освобождаем память перед reranker-ом.
+    del model
     final_results = rerank(
         question,
-        hybrid_candidates,
+        retrieval["hybrid_candidates"],
         limit=FINAL_RESULTS_LIMIT,
     )
 
@@ -207,10 +248,10 @@ def hybrid_search() -> None:
         chunk_id = result["chunk_id"]
         chunk = result["chunk"]
         hybrid_score = result["hybrid_score"]
-        dense_rank = dense_ranks.get(chunk_id, "—")
-        bm25_rank = bm25_ranks.get(chunk_id, "—")
-        dense_raw = dense_scores.get(chunk_id)
-        bm25_raw = bm25_scores.get(chunk_id)
+        dense_rank = result["dense_rank"] or "—"
+        bm25_rank = result["bm25_rank"] or "—"
+        dense_raw = result["dense_raw"]
+        bm25_raw = result["bm25_raw"]
         text = chunk["text"]
         if len(text) > TEXT_PREVIEW_LENGTH:
             text = text[:TEXT_PREVIEW_LENGTH].rstrip() + "…"
@@ -221,13 +262,13 @@ def hybrid_search() -> None:
         print(f"Hybrid score: {hybrid_score:.4f}")
         print(
             f"Dense: rank={dense_rank}, "
-            f"raw={dense_raw:.4f}, norm={dense_normalized[chunk_id]:.4f}"
+            f"raw={dense_raw:.4f}, norm={result['dense_normalized']:.4f}"
             if dense_raw is not None
             else "Dense: не найден в top 20"
         )
         print(
             f"BM25: rank={bm25_rank}, "
-            f"raw={bm25_raw:.4f}, norm={bm25_normalized[chunk_id]:.4f}"
+            f"raw={bm25_raw:.4f}, norm={result['bm25_normalized']:.4f}"
             if bm25_raw is not None
             else "BM25: не найден в top 20"
         )

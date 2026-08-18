@@ -9,21 +9,31 @@ MAX_LENGTH = 1024
 BATCH_SIZE = 1
 
 
+def load_reranker() -> CrossEncoder:
+    """Загружает модель один раз для одного поискового или evaluation-запуска."""
+
+    return CrossEncoder(
+        MODEL_NAME,
+        max_length=MAX_LENGTH,
+        activation_fn=nn.Sigmoid(),
+    )
+
+
 def rerank(
     question: str,
     candidates: list[dict],
     limit: int,
+    model: CrossEncoder | None = None,
+    show_progress_bar: bool = True,
 ) -> list[dict]:
     """Оценивает пары «вопрос + чанк» и возвращает лучшие кандидаты."""
 
     if not candidates:
         return []
 
-    model = CrossEncoder(
-        MODEL_NAME,
-        max_length=MAX_LENGTH,
-        activation_fn=nn.Sigmoid(),
-    )
+    if model is None:
+        model = load_reranker()
+
     pairs = [
         (question, candidate["chunk"]["text"])
         for candidate in candidates
@@ -31,7 +41,7 @@ def rerank(
     scores = model.predict(
         pairs,
         batch_size=BATCH_SIZE,
-        show_progress_bar=True,
+        show_progress_bar=show_progress_bar,
     )
 
     reranked = [

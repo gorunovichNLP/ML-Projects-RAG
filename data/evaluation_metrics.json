@@ -1,0 +1,19 @@
+{
+  "evaluation_cases": 12,
+  "dense": {
+    "recall_at_20": 1.0,
+    "mrr": 0.724537
+  },
+  "bm25": {
+    "recall_at_20": 0.916667,
+    "mrr": 0.555556
+  },
+  "hybrid": {
+    "recall_at_20": 1.0,
+    "mrr": 0.75
+  },
+  "reranker": {
+    "precision_at_1": 0.833333,
+    "mrr": 0.902778
+  }
+}
