@@ -40,3 +40,32 @@ MinIO Console будет доступна по адресу `http://localhost:90
 
 Когда дойдём до Airflow, вынесем параметры MinIO в Airflow Connection, а эту
 функцию загрузки вызовем из отдельной задачи DAG.
+
+## Обработка одного документа
+
+Скрипт `process_one_document.py` берёт документ №1 из MinIO, извлекает текст,
+таблицы и изображения, распознаёт изображения через Tesseract (`rus+eng`) и
+сохраняет результат обратно в MinIO:
+
+```text
+processed/<название документа>/
+├── document.md
+└── images/
+```
+
+Длинные вертикальные схемы сохраняются как изображения без OCR: распознанный
+текст теряет связи между узлами схемы и только ухудшает будущий поиск.
+
+Запуск:
+
+```powershell
+python -m pip install -r requirements.txt
+python process_one_document.py
+```
+
+Если Tesseract установлен нестандартно, укажите путь явно:
+
+```powershell
+$env:TESSERACT_PATH = "C:\path\to\tesseract.exe"
+python process_one_document.py
+```
