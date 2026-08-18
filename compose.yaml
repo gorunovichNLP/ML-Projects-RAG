@@ -20,7 +20,17 @@ services:
       timeout: 5s
       retries: 10
 
+  qdrant:
+    # Локальное хранилище dense-векторов. Порты доступны только с этой машины.
+    image: qdrant/qdrant:v1.18.2
+    ports:
+      - "127.0.0.1:6333:6333" # REST API и Web UI.
+      - "127.0.0.1:6334:6334" # gRPC API для будущей индексации.
+    volumes:
+      - qdrant_data:/qdrant/storage
+
 volumes:
   # A named volume keeps uploaded documents after container restarts.
   minio_data:
-
+  # Named volume avoids filesystem compatibility problems with Windows mounts.
+  qdrant_data:

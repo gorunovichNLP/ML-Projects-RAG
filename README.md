@@ -89,3 +89,21 @@ chunks/<название документа>/chunks.jsonl
 точный `token_count`. В лимит входят префикс `passage:`, путь заголовков и
 служебные токены `multilingual-e5-large`. Чанки не пересекают границы разделов.
 Если отдельный абзац превышает лимит, он делится с перекрытием 64 токена.
+
+## Qdrant
+
+Qdrant запускается вместе с MinIO:
+
+```powershell
+docker compose up -d
+```
+
+- REST API: `http://localhost:6333`
+- Web UI: `http://localhost:6333/dashboard`
+- gRPC API: `localhost:6334`
+
+Dense-векторы хранятся в Docker volume `rag-local_qdrant_data`. Локальная
+коллекция `document_chunks` использует векторы размером 1024 и Cosine distance.
+Qdrant запущен без аутентификации, поэтому его порты привязаны только к
+`127.0.0.1`. Для внешнего или production-развёртывания нужна отдельная настройка
+безопасности.
