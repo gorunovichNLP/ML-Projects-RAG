@@ -4,7 +4,7 @@
 
 ```text
 ingestion/            загрузка, обработка, чанкинг и dense-индексация
-retrieval/            dense, BM25 и гибридный поиск
+retrieval/            dense, BM25, гибридный поиск и reranking
 data/raw_docs/        10 исходных DOCX-файлов
 data/chunks.jsonl     локальная контрольная выгрузка чанков
 compose.yaml          MinIO и Qdrant
@@ -166,6 +166,8 @@ hybrid_score = 0.85 * dense_normalized + 0.15 * bm25_normalized
 python retrieval/search_hybrid.py
 ```
 
-Результаты объединяются по `chunk_id`, сортируются по `hybrid_score`, после чего
-выводятся итоговые top 20. Исходные scores и позиции обоих поисков также
-показываются для ручной проверки формулы.
+Результаты объединяются по `chunk_id` и сортируются по `hybrid_score`. Лучшие 20
+кандидатов передаются в `BAAI/bge-reranker-v2-m3`, который совместно оценивает
+вопрос и полный текст каждого чанка. После reranking выводятся итоговые top 5.
+Исходные scores и позиции всех этапов сохраняются в выводе для ручной проверки.
+Логика этого этапа вынесена в отдельный файл `retrieval/reranker.py`.

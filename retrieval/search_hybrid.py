@@ -10,6 +10,8 @@ from rank_bm25 import BM25Okapi
 from razdel import tokenize as razdel_tokenize
 from sentence_transformers import SentenceTransformer
 
+from reranker import rerank
+
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "rag_admin")
@@ -24,7 +26,8 @@ MODEL_NAME = "intfloat/multilingual-e5-large"
 RUSSIAN_STEMMER = snowballstemmer.stemmer("russian")
 
 CANDIDATES_LIMIT = 20
-RESULTS_LIMIT = 20
+HYBRID_CANDIDATES_LIMIT = 20
+FINAL_RESULTS_LIMIT = 5
 DENSE_WEIGHT = 0.85
 BM25_WEIGHT = 0.15
 TEXT_PREVIEW_LENGTH = 600
@@ -142,6 +145,8 @@ def hybrid_search() -> None:
         limit=CANDIDATES_LIMIT,
         with_payload=True,
     ).points
+    # Dense-модель больше не нужна: освобождаем память перед reranker-ом.
+    del model
 
     dense_scores = {
         result.payload["chunk_id"]: result.score
@@ -180,13 +185,28 @@ def hybrid_search() -> None:
         hybrid_results.append((hybrid_score, chunk_id))
 
     hybrid_results.sort(reverse=True)
-    hybrid_results = hybrid_results[:RESULTS_LIMIT]
+    hybrid_results = hybrid_results[:HYBRID_CANDIDATES_LIMIT]
+    hybrid_candidates = [
+        {
+            "chunk_id": chunk_id,
+            "chunk": chunks_by_id[chunk_id],
+            "hybrid_score": hybrid_score,
+        }
+        for hybrid_score, chunk_id in hybrid_results
+    ]
+    final_results = rerank(
+        question,
+        hybrid_candidates,
+        limit=FINAL_RESULTS_LIMIT,
+    )
 
-    for result_number, (hybrid_score, chunk_id) in enumerate(
-        hybrid_results,
+    for result_number, result in enumerate(
+        final_results,
         start=1,
     ):
-        chunk = chunks_by_id[chunk_id]
+        chunk_id = result["chunk_id"]
+        chunk = result["chunk"]
+        hybrid_score = result["hybrid_score"]
         dense_rank = dense_ranks.get(chunk_id, "—")
         bm25_rank = bm25_ranks.get(chunk_id, "—")
         dense_raw = dense_scores.get(chunk_id)
@@ -197,6 +217,7 @@ def hybrid_search() -> None:
 
         print(f"\n{'=' * 80}")
         print(f"Результат: {result_number}")
+        print(f"Reranker score: {result['reranker_score']:.4f}")
         print(f"Hybrid score: {hybrid_score:.4f}")
         print(
             f"Dense: rank={dense_rank}, "
