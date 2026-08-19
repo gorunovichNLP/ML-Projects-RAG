@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 EVALUATION_PATH = PROJECT_ROOT / "data" / "evaluation.jsonl"
 METRICS_PATH = PROJECT_ROOT / "data" / "evaluation_metrics.json"
 RERANK_LIMIT = 20
+SPLITS = ("dev", "test")
 
 
 def load_evaluation_cases() -> list[dict]:
@@ -26,6 +27,7 @@ def load_evaluation_cases() -> list[dict]:
             case = json.loads(line)
             question = case.get("question", "").strip()
             relevant_ids = case.get("relevant_chunk_ids", [])
+            split = case.get("split", "").strip()
 
             if not question:
                 raise ValueError(f"Строка {line_number}: пустой question")
@@ -33,11 +35,21 @@ def load_evaluation_cases() -> list[dict]:
                 raise ValueError(
                     f"Строка {line_number}: нет relevant_chunk_ids"
                 )
+            if split not in SPLITS:
+                raise ValueError(
+                    f"Строка {line_number}: split должен быть dev или test"
+                )
 
             cases.append(case)
 
     if not cases:
         raise RuntimeError("Evaluation-набор пуст")
+
+    missing_splits = set(SPLITS) - {case["split"] for case in cases}
+    if missing_splits:
+        raise ValueError(
+            f"В evaluation-наборе отсутствуют split: {sorted(missing_splits)}"
+        )
 
     return cases
 
@@ -61,6 +73,64 @@ def mean(values: list[float]) -> float:
     """Считает среднее для уже проверенного непустого набора."""
 
     return sum(values) / len(values)
+
+
+def empty_metrics() -> dict[str, list[float]]:
+    """Создаёт независимые накопители метрик для одного split."""
+
+    return {
+        "dense_recall": [],
+        "dense_mrr": [],
+        "bm25_recall": [],
+        "bm25_mrr": [],
+        "hybrid_recall": [],
+        "hybrid_mrr": [],
+        "reranker_precision": [],
+        "reranker_mrr": [],
+    }
+
+
+def build_split_report(metrics: dict[str, list[float]]) -> dict:
+    """Собирает итоговые метрики одного split."""
+
+    return {
+        "evaluation_cases": len(metrics["dense_recall"]),
+        "dense": {
+            "recall_at_20": round(mean(metrics["dense_recall"]), 6),
+            "mrr": round(mean(metrics["dense_mrr"]), 6),
+        },
+        "bm25": {
+            "recall_at_20": round(mean(metrics["bm25_recall"]), 6),
+            "mrr": round(mean(metrics["bm25_mrr"]), 6),
+        },
+        "hybrid": {
+            "recall_at_20": round(mean(metrics["hybrid_recall"]), 6),
+            "mrr": round(mean(metrics["hybrid_mrr"]), 6),
+        },
+        "reranker": {
+            "precision_at_1": round(
+                mean(metrics["reranker_precision"]),
+                6,
+            ),
+            "mrr": round(mean(metrics["reranker_mrr"]), 6),
+        },
+    }
+
+
+def print_split_report(split: str, report: dict) -> None:
+    """Печатает компактный отчёт для одного split."""
+
+    print(f"\n{split.upper()}: {report['evaluation_cases']} вопросов")
+    for name in ("dense", "bm25", "hybrid"):
+        print(
+            f"{name.capitalize():<10} "
+            f"Recall@20={report[name]['recall_at_20']:.3f}  "
+            f"MRR={report[name]['mrr']:.3f}"
+        )
+    print(
+        f"Reranker   Precision@1={report['reranker']['precision_at_1']:.3f}  "
+        f"MRR={report['reranker']['mrr']:.3f}"
+    )
 
 
 def evaluate() -> None:
@@ -95,16 +165,7 @@ def evaluate() -> None:
     del dense_model
     reranker_model = load_reranker()
 
-    metrics = {
-        "dense_recall": [],
-        "dense_mrr": [],
-        "bm25_recall": [],
-        "bm25_mrr": [],
-        "hybrid_recall": [],
-        "hybrid_mrr": [],
-        "reranker_precision": [],
-        "reranker_mrr": [],
-    }
+    metrics_by_split = {split: empty_metrics() for split in SPLITS}
 
     print("\nРезультаты по вопросам")
     print("=" * 80)
@@ -126,6 +187,7 @@ def evaluate() -> None:
             show_progress_bar=False,
         )
         reranked_ids = [candidate["chunk_id"] for candidate in reranked]
+        metrics = metrics_by_split[case["split"]]
 
         metrics["dense_recall"].append(recall_at_k(dense_ids, relevant_ids))
         metrics["dense_mrr"].append(reciprocal_rank(dense_ids, relevant_ids))
@@ -140,7 +202,7 @@ def evaluate() -> None:
             reciprocal_rank(reranked_ids, relevant_ids)
         )
 
-        print(f"{number:02d}. {case['question']}")
+        print(f"{number:02d}. [{case['split']}] {case['question']}")
         print(
             "    ranks: "
             f"dense={rank_or_dash(dense_ids, relevant_ids)}, "
@@ -154,37 +216,14 @@ def evaluate() -> None:
 
     report = {
         "evaluation_cases": len(cases),
-        "dense": {
-            "recall_at_20": round(mean(metrics["dense_recall"]), 6),
-            "mrr": round(mean(metrics["dense_mrr"]), 6),
-        },
-        "bm25": {
-            "recall_at_20": round(mean(metrics["bm25_recall"]), 6),
-            "mrr": round(mean(metrics["bm25_mrr"]), 6),
-        },
-        "hybrid": {
-            "recall_at_20": round(mean(metrics["hybrid_recall"]), 6),
-            "mrr": round(mean(metrics["hybrid_mrr"]), 6),
-        },
-        "reranker": {
-            "precision_at_1": round(
-                mean(metrics["reranker_precision"]),
-                6,
-            ),
-            "mrr": round(mean(metrics["reranker_mrr"]), 6),
+        "splits": {
+            split: build_split_report(metrics_by_split[split])
+            for split in SPLITS
         },
     }
 
-    for name in ("dense", "bm25", "hybrid"):
-        print(
-            f"{name.capitalize():<10} "
-            f"Recall@20={report[name]['recall_at_20']:.3f}  "
-            f"MRR={report[name]['mrr']:.3f}"
-        )
-    print(
-        f"Reranker   Precision@1={report['reranker']['precision_at_1']:.3f}  "
-        f"MRR={report['reranker']['mrr']:.3f}"
-    )
+    for split in SPLITS:
+        print_split_report(split, report["splits"][split])
 
     METRICS_PATH.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
