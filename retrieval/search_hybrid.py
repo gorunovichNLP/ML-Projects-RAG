@@ -220,11 +220,13 @@ def retrieve(
     }
 
 
-def hybrid_search() -> None:
-    """Выполняет интерактивный гибридный поиск с reranking."""
+def retrieve_and_rerank(
+    question: str,
+    limit: int = FINAL_RESULTS_LIMIT,
+) -> list[dict]:
+    """Выполняет полный поиск и возвращает лучшие чанки после reranker."""
 
     chunks, bm25, model, qdrant_client = prepare_search()
-    question = input("Введите вопрос: ").strip()
     retrieval = retrieve(
         question,
         chunks,
@@ -235,11 +237,18 @@ def hybrid_search() -> None:
 
     # Dense-модель больше не нужна: освобождаем память перед reranker-ом.
     del model
-    final_results = rerank(
+    return rerank(
         question,
         retrieval["hybrid_candidates"],
-        limit=FINAL_RESULTS_LIMIT,
+        limit=limit,
     )
+
+
+def hybrid_search() -> None:
+    """Выполняет интерактивный гибридный поиск с reranking."""
+
+    question = input("Введите вопрос: ").strip()
+    final_results = retrieve_and_rerank(question)
 
     for result_number, result in enumerate(
         final_results,
