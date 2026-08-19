@@ -4,10 +4,13 @@ import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 from openai import OpenAI
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env", override=False)
+
 sys.path.insert(0, str(PROJECT_ROOT / "retrieval"))
 
 from search_hybrid import retrieve_and_rerank  # noqa: E402
@@ -63,6 +66,8 @@ def generate_answer(question: str, results: list[dict]) -> str:
     client = OpenAI(
         base_url=OPENROUTER_URL,
         api_key=api_key,
+        timeout=120.0,
+        max_retries=1,
     )
     context = build_context(results)
     completion = client.chat.completions.create(

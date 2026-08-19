@@ -10,7 +10,7 @@ from rank_bm25 import BM25Okapi
 from razdel import tokenize as razdel_tokenize
 from sentence_transformers import SentenceTransformer
 
-from reranker import rerank
+from reranker import filter_current_versions, rerank, select_context_results
 
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
@@ -186,7 +186,7 @@ def retrieve(
     bm25_normalized = min_max_normalize(bm25_scores)
     candidate_ids = dense_scores.keys() | bm25_scores.keys()
 
-    hybrid_results = []
+    hybrid_candidates = []
     for chunk_id in candidate_ids:
         dense_score = dense_normalized.get(chunk_id, 0.0)
         bm25_score = bm25_normalized.get(chunk_id, 0.0)
@@ -194,24 +194,27 @@ def retrieve(
             DENSE_WEIGHT * dense_score
             + BM25_WEIGHT * bm25_score
         )
-        hybrid_results.append((hybrid_score, chunk_id))
+        hybrid_candidates.append(
+            {
+                "chunk_id": chunk_id,
+                "chunk": chunks_by_id[chunk_id],
+                "hybrid_score": hybrid_score,
+                "dense_rank": dense_ranks.get(chunk_id),
+                "dense_raw": dense_scores.get(chunk_id),
+                "dense_normalized": dense_normalized.get(chunk_id),
+                "bm25_rank": bm25_ranks.get(chunk_id),
+                "bm25_raw": bm25_scores.get(chunk_id),
+                "bm25_normalized": bm25_normalized.get(chunk_id),
+            }
+        )
 
-    hybrid_results.sort(reverse=True)
-    hybrid_results = hybrid_results[:HYBRID_CANDIDATES_LIMIT]
-    hybrid_candidates = [
-        {
-            "chunk_id": chunk_id,
-            "chunk": chunks_by_id[chunk_id],
-            "hybrid_score": hybrid_score,
-            "dense_rank": dense_ranks.get(chunk_id),
-            "dense_raw": dense_scores.get(chunk_id),
-            "dense_normalized": dense_normalized.get(chunk_id),
-            "bm25_rank": bm25_ranks.get(chunk_id),
-            "bm25_raw": bm25_scores.get(chunk_id),
-            "bm25_normalized": bm25_normalized.get(chunk_id),
-        }
-        for hybrid_score, chunk_id in hybrid_results
-    ]
+    # Неактуальные версии не должны занимать места в candidate set.
+    hybrid_candidates = filter_current_versions(hybrid_candidates)
+    hybrid_candidates.sort(
+        key=lambda candidate: candidate["hybrid_score"],
+        reverse=True,
+    )
+    hybrid_candidates = hybrid_candidates[:HYBRID_CANDIDATES_LIMIT]
 
     return {
         "dense_ids": list(dense_scores),
@@ -237,11 +240,12 @@ def retrieve_and_rerank(
 
     # Dense-модель больше не нужна: освобождаем память перед reranker-ом.
     del model
-    return rerank(
+    reranked = rerank(
         question,
         retrieval["hybrid_candidates"],
-        limit=limit,
+        limit=len(retrieval["hybrid_candidates"]),
     )
+    return select_context_results(reranked, limit=limit)
 
 
 def hybrid_search() -> None:
